@@ -277,3 +277,50 @@ class Portfolio:
         elif self.regime == "BEAR":
             return 3
         return 4
+
+    # --- Interface required by strategy.py ---
+
+    @property
+    def in_caution(self):
+        return self.caution_mode
+
+    def get_open_count(self):
+        return len(self.positions)
+
+    def has_position(self, ticker):
+        return ticker in self.positions
+
+    def get_portfolio_value(self):
+        return getattr(self, "_current_value", self.cash)
+
+    def get_position_size(self, strategy, stop_pct, weight=1.0):
+        pv = self.get_portfolio_value()
+        base = (pv * 0.035) / max(stop_pct, 0.01) * weight
+        size = min(base, pv * 0.25)
+        if self.caution_mode:
+            size *= 0.5
+        return size
+
+    def positions_as_list(self):
+        result = []
+        for ticker, pos in self.positions.items():
+            result.append({
+                "ticker": ticker,
+                "strategy": pos["strategy"],
+                "entry_price": pos["entry_price"],
+                "shares": pos["shares"],
+                "stop_price": pos["stop_price"],
+                "days_held": pos.get("days_held", 0),
+                "gap_open": pos.get("gap_open", pos["entry_price"]),
+                "harvested": pos.get("partial_harvested", False),
+            })
+        return result
+
+    def sync_from_pos_list(self, pos_list):
+        """Sync stop_price and harvested state back after check_exits mutates pos dicts."""
+        for item in pos_list:
+            ticker = item["ticker"]
+            if ticker in self.positions:
+                self.positions[ticker]["stop_price"] = item["stop_price"]
+                self.positions[ticker]["partial_harvested"] = item.get("harvested", False)
+                self.positions[ticker]["shares"] = item["shares"]

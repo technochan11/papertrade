@@ -145,17 +145,24 @@ def api_trades():
 def api_regime():
     try:
         from portfolio import Portfolio
-        from data import fetch_ticker_data, compute_indicators
-        from strategy import detect_regime
+        from data import fetch_ticker_data
+        from strategy import get_regime, get_adx
+        from ta.trend import EMAIndicator
         portfolio = Portfolio()
-        spy_raw = fetch_ticker_data("SPY", period="1y")
-        spy_df = compute_indicators(spy_raw) if spy_raw is not None else None
-        regime, stats = detect_regime(spy_df)
-        return jsonify({
-            "regime": regime,
-            "stats": stats,
-            "stored_regime": portfolio.regime,
-        })
+        spy_data = fetch_ticker_data("SPY", period="1y")
+        regime = get_regime(spy_data) if spy_data is not None else "NEUTRAL"
+        adx = get_adx(spy_data) if spy_data is not None else 0.0
+        stats = {}
+        if spy_data is not None and len(spy_data) >= 200:
+            close = spy_data["Close"]
+            price = float(close.iloc[-1])
+            ema50 = float(EMAIndicator(close, window=50).ema_indicator().iloc[-1])
+            ema200 = float(EMAIndicator(close, window=200).ema_indicator().iloc[-1])
+            ret1m = float(close.iloc[-1] / close.iloc[-21] - 1) if len(close) >= 21 else 0
+            ret3m = float(close.iloc[-1] / close.iloc[-63] - 1) if len(close) >= 63 else 0
+            stats = {"price": price, "ema50": ema50, "ema200": ema200,
+                     "return_1m": ret1m, "return_3m": ret3m, "adx": adx}
+        return jsonify({"regime": regime, "stats": stats, "stored_regime": portfolio.regime})
     except Exception as e:
         logger.error(f"/api/regime error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
@@ -180,68 +187,117 @@ def api_equity_curve():
 @app.route("/api/run-strategy", methods=["POST"])
 def api_run_strategy():
     try:
-        from data import fetch_ticker_data, compute_indicators, get_current_price, ALL_TICKERS, get_vix_data
-        from strategy import detect_regime, strategy_trend, strategy_mean_reversion, strategy_vol_reversion, strategy_crypto_trend, strategy_earnings_drift, check_exits
+        from data import fetch_ticker_data, get_current_price, ALL_TICKERS, get_vix_data, STOCKS, CRYPTO
+        from strategy import (
+            get_regime, get_adx, calculate_weights, detect_gap_ups,
+            trend_following, mean_reversion, volatility_reversion,
+            earnings_drift, crypto_trend, check_exits,
+        )
         from portfolio import Portfolio
 
         portfolio = Portfolio()
-        data_map = {}
-        for sym in ALL_TICKERS:
-            raw = fetch_ticker_data(sym)
-            if raw is not None:
-                df = compute_indicators(raw)
-                if df is not None:
-                    data_map[sym] = df
 
-        spy_df = data_map.get("SPY")
-        regime, spy_stats = detect_regime(spy_df)
+        # Fetch raw yfinance DataFrames (strategy.py computes indicators via ta library)
+        market_data = {}
+        for sym in STOCKS:
+            df = fetch_ticker_data(sym)
+            if df is not None:
+                market_data[sym] = df
+
+        crypto_data = {}
+        for sym in CRYPTO:
+            df = fetch_ticker_data(sym)
+            if df is not None:
+                crypto_data[sym] = df
+
+        spy_data = market_data.get("SPY")
+        btc_data = crypto_data.get("BTC-USD")
+        vix_data = get_vix_data()
+
+        regime = get_regime(spy_data)
+        adx = get_adx(spy_data)
         portfolio.regime = regime
 
+        # Current prices for portfolio valuation
         prices = {}
-        for sym in ALL_TICKERS:
+        for sym in list(portfolio.positions.keys()):
             p = get_current_price(sym)
             if p:
                 prices[sym] = p
 
-        vix_data = get_vix_data()
+        portfolio._current_value = portfolio.total_value(prices)
+        weights = calculate_weights(portfolio.trade_history)
+        max_pos = portfolio.max_positions()
 
-        exits = check_exits(portfolio, data_map, regime, prices)
-        pv = portfolio.total_value(prices)
-        for sym, price, reason in exits:
-            portfolio.close_position(sym, price, pv, reason)
+        # Run exits — check_exits takes a list of position dicts and mutates them
+        pos_list = portfolio.positions_as_list()
+        all_market = {**market_data, **crypto_data}
+        exit_signals = check_exits(pos_list, all_market, crypto_data, regime)
 
+        pv = portfolio._current_value
+        exits_done = 0
+        for sig in exit_signals:
+            ticker = sig["ticker"]
+            price = sig["price"]
+            if sig.get("partial"):
+                pos = portfolio.positions.get(ticker)
+                if pos:
+                    h_shares = sig["shares"]
+                    profit_pct = (price - pos["entry_price"]) / pos["entry_price"]
+                    portfolio.cash += price * h_shares
+                    pos["shares"] -= h_shares
+                    pos["partial_harvested"] = True
+                    portfolio._record_trade(ticker, "SELL", sig["strategy"], price, h_shares, pv, sig["reason"], profit_pct)
+            else:
+                portfolio.close_position(ticker, price, pv, sig.get("reason", "exit"))
+                exits_done += 1
+
+        # Sync trailing stops mutated by check_exits back into portfolio
+        portfolio.sync_from_pos_list(pos_list)
         portfolio.increment_days_held()
-        for sym in portfolio.positions:
-            portfolio.update_trailing_stop(sym, prices.get(sym, portfolio.positions[sym]["entry_price"]))
 
-        all_actions = []
-        all_actions += strategy_trend(portfolio, data_map, regime, prices)
-        all_actions += strategy_mean_reversion(portfolio, data_map, regime, prices)
-        all_actions += strategy_vol_reversion(portfolio, data_map, vix_data, prices)
-        all_actions += strategy_earnings_drift(portfolio, data_map, regime, prices)
-        all_actions += strategy_crypto_trend(portfolio, data_map, prices)
+        # Update value after exits, then run entry strategies
+        portfolio._current_value = portfolio.total_value(prices)
 
-        pv = portfolio.total_value(prices)
+        gap_up_tickers = detect_gap_ups(STOCKS, market_data)
+
+        all_signals = []
+        all_signals += trend_following(STOCKS, market_data, portfolio, regime, adx, weights, max_pos)
+        all_signals += mean_reversion(STOCKS, market_data, portfolio, regime, adx, weights, max_pos)
+        all_signals += volatility_reversion(spy_data, vix_data, portfolio, weights, max_pos)
+        all_signals += earnings_drift(gap_up_tickers, market_data, portfolio, regime, weights, max_pos)
+        all_signals += crypto_trend(CRYPTO, crypto_data, btc_data, portfolio, regime, weights, max_pos)
+
+        pv = portfolio._current_value
         entered = []
-        for action, sym, strat, price, shares, stop, reason in all_actions:
-            if len(portfolio.positions) >= portfolio.max_positions():
+        for sig in all_signals:
+            if len(portfolio.positions) >= max_pos:
                 break
-            if sym not in portfolio.positions:
-                ok = portfolio.open_position(sym, strat, price, shares, stop, pv, reason)
+            ticker = sig["ticker"]
+            if ticker not in portfolio.positions:
+                ok = portfolio.open_position(ticker, sig["strategy"], sig["price"],
+                                             sig["shares"], sig["stop_price"], pv, sig["reason"])
                 if ok:
-                    entered.append({"symbol": sym, "strategy": strat, "price": price})
+                    entered.append({"symbol": ticker, "strategy": sig["strategy"], "price": sig["price"]})
 
-        portfolio.update_caution(pv)
-        spy_price = prices.get("SPY", 0)
-        portfolio.save_equity_snapshot(spy_price, regime, prices)
+        final_prices = {}
+        for sym in list(portfolio.positions.keys()):
+            p = get_current_price(sym)
+            if p:
+                final_prices[sym] = p
+
+        portfolio.update_caution(portfolio.total_value(final_prices))
+        spy_price = get_current_price("SPY") or 0
+        portfolio.save_equity_snapshot(spy_price, regime, final_prices)
         portfolio.save()
 
         return jsonify({
             "status": "ok",
             "regime": regime,
-            "exits": len(exits),
+            "adx": round(adx, 1),
+            "exits": exits_done,
             "entered": entered,
-            "portfolio_value": portfolio.total_value(prices),
+            "portfolio_value": portfolio.total_value(final_prices),
             "open_positions": len(portfolio.positions),
         })
     except Exception as e:
@@ -251,7 +307,7 @@ def api_run_strategy():
 
 if __name__ == "__main__":
     init_app()
-    port = int(os.environ.get("PORT", 5001))
+    port = int(os.environ.get("PORT", 5005))
     app.run(host="0.0.0.0", port=port, debug=False)
 else:
     init_app()

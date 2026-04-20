@@ -1,6 +1,4 @@
 import logging
-import time
-from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
@@ -9,159 +7,172 @@ logger = logging.getLogger(__name__)
 ET = pytz.timezone("America/New_York")
 
 
-def run_morning_scan(app_context):
-    logger.info("Morning scan starting (9:30 AM ET)")
+def _build_market_data():
+    from data import fetch_ticker_data, STOCKS, CRYPTO, get_vix_data, get_current_price
+    market_data = {}
+    for sym in STOCKS:
+        df = fetch_ticker_data(sym)
+        if df is not None:
+            market_data[sym] = df
+    crypto_data = {}
+    for sym in CRYPTO:
+        df = fetch_ticker_data(sym)
+        if df is not None:
+            crypto_data[sym] = df
+    vix_data = get_vix_data()
+    prices = {}
+    for sym in list(market_data) + list(crypto_data):
+        p = get_current_price(sym)
+        if p:
+            prices[sym] = p
+    return market_data, crypto_data, vix_data, prices
+
+
+def run_morning_scan(_ctx=None):
+    logger.info("Morning scan (9:30 AM ET)")
     try:
-        from data import fetch_multiple, compute_indicators, get_current_price, is_market_open, ALL_TICKERS, get_vix_data
-        from strategy import detect_regime, strategy_earnings_drift
+        from data import is_market_open, STOCKS
+        from strategy import get_regime, get_adx, calculate_weights, detect_gap_ups, earnings_drift
         from portfolio import Portfolio
 
         if not is_market_open():
-            logger.info("Market closed, skipping morning scan")
+            logger.info("Market closed — skipping morning scan")
             return
 
+        market_data, crypto_data, vix_data, prices = _build_market_data()
         portfolio = Portfolio()
-        data_map = {}
-        for sym in ALL_TICKERS:
-            df = None
-            from data import fetch_ticker_data
-            raw = fetch_ticker_data(sym)
-            if raw is not None:
-                df = compute_indicators(raw)
-            if df is not None:
-                data_map[sym] = df
-
-        spy_df = data_map.get("SPY")
-        regime, spy_stats = detect_regime(spy_df)
+        spy_data = market_data.get("SPY")
+        regime = get_regime(spy_data)
+        adx = get_adx(spy_data)
         portfolio.regime = regime
+        portfolio._current_value = portfolio.total_value(prices)
 
-        prices = {}
-        for sym in ALL_TICKERS:
-            p = get_current_price(sym)
-            if p:
-                prices[sym] = p
+        weights = calculate_weights(portfolio.trade_history)
+        max_pos = portfolio.max_positions()
+        gap_up_tickers = detect_gap_ups(STOCKS, market_data)
+        signals = earnings_drift(gap_up_tickers, market_data, portfolio, regime, weights, max_pos)
 
-        drift_trades = strategy_earnings_drift(portfolio, data_map, regime, prices)
-        for action, sym, strat, price, shares, stop, reason in drift_trades:
-            pv = portfolio.total_value(prices)
-            portfolio.open_position(sym, strat, price, shares, stop, pv, reason)
-
+        pv = portfolio._current_value
+        for sig in signals:
+            if len(portfolio.positions) >= max_pos:
+                break
+            if sig["ticker"] not in portfolio.positions:
+                portfolio.open_position(sig["ticker"], sig["strategy"], sig["price"],
+                                        sig["shares"], sig["stop_price"], pv, sig["reason"])
         portfolio.save()
         logger.info(f"Morning scan done. Regime={regime}, positions={len(portfolio.positions)}")
     except Exception as e:
         logger.error(f"Morning scan failed: {e}", exc_info=True)
 
 
-def run_main_strategy(app_context):
-    logger.info("Main strategy run starting (10:30 AM ET)")
+def run_main_strategy(_ctx=None):
+    logger.info("Main strategy run (10:30 AM ET)")
     try:
-        from data import fetch_multiple, compute_indicators, get_current_price, is_market_open, ALL_TICKERS, get_vix_data, fetch_ticker_data
-        from strategy import detect_regime, strategy_trend, strategy_mean_reversion, strategy_vol_reversion, strategy_crypto_trend
+        from data import is_market_open, STOCKS, CRYPTO
+        from strategy import (
+            get_regime, get_adx, calculate_weights, detect_gap_ups,
+            trend_following, mean_reversion, volatility_reversion,
+            earnings_drift, crypto_trend,
+        )
         from portfolio import Portfolio
 
         if not is_market_open():
-            logger.info("Market closed, skipping main strategy")
+            logger.info("Market closed — skipping main strategy")
             return
 
+        market_data, crypto_data, vix_data, prices = _build_market_data()
         portfolio = Portfolio()
-        data_map = {}
-        for sym in ALL_TICKERS:
-            raw = fetch_ticker_data(sym)
-            if raw is not None:
-                df = compute_indicators(raw)
-                if df is not None:
-                    data_map[sym] = df
-
-        spy_df = data_map.get("SPY")
-        regime, spy_stats = detect_regime(spy_df)
+        spy_data = market_data.get("SPY")
+        btc_data = crypto_data.get("BTC-USD")
+        regime = get_regime(spy_data)
+        adx = get_adx(spy_data)
         portfolio.regime = regime
+        portfolio._current_value = portfolio.total_value(prices)
 
-        prices = {}
-        for sym in ALL_TICKERS:
-            p = get_current_price(sym)
-            if p:
-                prices[sym] = p
+        weights = calculate_weights(portfolio.trade_history)
+        max_pos = portfolio.max_positions()
+        gap_up_tickers = detect_gap_ups(STOCKS, market_data)
 
-        vix_data = get_vix_data()
+        all_signals = []
+        all_signals += trend_following(STOCKS, market_data, portfolio, regime, adx, weights, max_pos)
+        all_signals += mean_reversion(STOCKS, market_data, portfolio, regime, adx, weights, max_pos)
+        all_signals += volatility_reversion(spy_data, vix_data, portfolio, weights, max_pos)
+        all_signals += earnings_drift(gap_up_tickers, market_data, portfolio, regime, weights, max_pos)
+        all_signals += crypto_trend(CRYPTO, crypto_data, btc_data, portfolio, regime, weights, max_pos)
 
-        all_actions = []
-        all_actions += strategy_trend(portfolio, data_map, regime, prices)
-        all_actions += strategy_mean_reversion(portfolio, data_map, regime, prices)
-        all_actions += strategy_vol_reversion(portfolio, data_map, vix_data, prices)
-        all_actions += strategy_crypto_trend(portfolio, data_map, prices)
-
-        pv = portfolio.total_value(prices)
-        for action, sym, strat, price, shares, stop, reason in all_actions:
-            if len(portfolio.positions) >= portfolio.max_positions():
+        pv = portfolio._current_value
+        for sig in all_signals:
+            if len(portfolio.positions) >= max_pos:
                 break
-            if sym not in portfolio.positions:
-                portfolio.open_position(sym, strat, price, shares, stop, pv, reason)
+            if sig["ticker"] not in portfolio.positions:
+                portfolio.open_position(sig["ticker"], sig["strategy"], sig["price"],
+                                        sig["shares"], sig["stop_price"], pv, sig["reason"])
 
-        portfolio.update_caution(pv)
+        portfolio.update_caution(portfolio.total_value(prices))
         portfolio.save()
-        logger.info(f"Main strategy done. Cash={portfolio.cash:.0f}, positions={len(portfolio.positions)}")
+        logger.info(f"Main strategy done. Positions={len(portfolio.positions)}")
     except Exception as e:
         logger.error(f"Main strategy failed: {e}", exc_info=True)
 
 
-def run_exit_checks(app_context):
-    logger.info("Exit checks starting (3:45 PM ET)")
+def run_exit_checks(_ctx=None):
+    logger.info("Exit checks (3:45 PM ET)")
     try:
-        from data import fetch_ticker_data, compute_indicators, get_current_price, is_market_open, ALL_TICKERS
-        from strategy import detect_regime, check_exits
+        from data import is_market_open, get_current_price
+        from strategy import get_regime, check_exits
         from portfolio import Portfolio
 
         if not is_market_open():
             return
 
+        market_data, crypto_data, vix_data, prices = _build_market_data()
         portfolio = Portfolio()
-        data_map = {}
-        for sym in list(portfolio.positions.keys()):
-            raw = fetch_ticker_data(sym)
-            if raw is not None:
-                df = compute_indicators(raw)
-                if df is not None:
-                    data_map[sym] = df
+        spy_data = market_data.get("SPY")
+        regime = get_regime(spy_data)
+        portfolio._current_value = portfolio.total_value(prices)
 
-        spy_raw = fetch_ticker_data("SPY")
-        spy_df = compute_indicators(spy_raw) if spy_raw is not None else None
-        regime, _ = detect_regime(spy_df)
+        pos_list = portfolio.positions_as_list()
+        all_market = {**market_data, **crypto_data}
+        exit_signals = check_exits(pos_list, all_market, crypto_data, regime)
 
-        prices = {}
-        for sym in list(portfolio.positions.keys()):
-            p = get_current_price(sym)
-            if p:
-                prices[sym] = p
-            portfolio.update_trailing_stop(sym, prices.get(sym, portfolio.positions[sym]["entry_price"]))
+        pv = portfolio._current_value
+        for sig in exit_signals:
+            ticker = sig["ticker"]
+            price = sig["price"]
+            if sig.get("partial"):
+                pos = portfolio.positions.get(ticker)
+                if pos:
+                    h_shares = sig["shares"]
+                    profit_pct = (price - pos["entry_price"]) / pos["entry_price"]
+                    portfolio.cash += price * h_shares
+                    pos["shares"] -= h_shares
+                    pos["partial_harvested"] = True
+                    portfolio._record_trade(ticker, "SELL", sig["strategy"], price, h_shares, pv, sig["reason"], profit_pct)
+            else:
+                portfolio.close_position(ticker, price, pv, sig.get("reason", "exit"))
 
-        exits = check_exits(portfolio, data_map, regime, prices)
-        pv = portfolio.total_value(prices)
-        for sym, price, reason in exits:
-            portfolio.close_position(sym, price, pv, reason)
-
+        portfolio.sync_from_pos_list(pos_list)
         portfolio.increment_days_held()
         portfolio.save()
-        logger.info(f"Exit checks done. Exited {len(exits)} positions")
+        logger.info(f"Exit checks done. Exited {len([s for s in exit_signals if not s.get('partial')])} positions")
     except Exception as e:
         logger.error(f"Exit checks failed: {e}", exc_info=True)
 
 
-def run_eod_snapshot(app_context):
-    logger.info("EOD snapshot starting (4:30 PM ET)")
+def run_eod_snapshot(_ctx=None):
+    logger.info("EOD snapshot (4:30 PM ET)")
     try:
-        from data import fetch_ticker_data, compute_indicators, get_current_price, ALL_TICKERS
-        from strategy import detect_regime
+        from data import get_current_price
+        from strategy import get_regime
         from portfolio import Portfolio
 
         portfolio = Portfolio()
-        spy_price = get_current_price("SPY") or 0
-
         prices = {}
         for sym in list(portfolio.positions.keys()):
             p = get_current_price(sym)
             if p:
                 prices[sym] = p
-
+        spy_price = get_current_price("SPY") or 0
         portfolio.save_equity_snapshot(spy_price, portfolio.regime, prices)
         portfolio.save()
         logger.info("EOD snapshot saved")
@@ -169,14 +180,12 @@ def run_eod_snapshot(app_context):
         logger.error(f"EOD snapshot failed: {e}", exc_info=True)
 
 
-def start_scheduler(app_context=None):
+def start_scheduler(_ctx=None):
     scheduler = BackgroundScheduler(timezone=ET)
-
-    scheduler.add_job(lambda: run_morning_scan(app_context), CronTrigger(hour=9, minute=30, timezone=ET))
-    scheduler.add_job(lambda: run_main_strategy(app_context), CronTrigger(hour=10, minute=30, timezone=ET))
-    scheduler.add_job(lambda: run_exit_checks(app_context), CronTrigger(hour=15, minute=45, timezone=ET))
-    scheduler.add_job(lambda: run_eod_snapshot(app_context), CronTrigger(hour=16, minute=30, timezone=ET))
-
+    scheduler.add_job(run_morning_scan, CronTrigger(hour=9, minute=30, timezone=ET))
+    scheduler.add_job(run_main_strategy, CronTrigger(hour=10, minute=30, timezone=ET))
+    scheduler.add_job(run_exit_checks, CronTrigger(hour=15, minute=45, timezone=ET))
+    scheduler.add_job(run_eod_snapshot, CronTrigger(hour=16, minute=30, timezone=ET))
     scheduler.start()
     logger.info("Scheduler started with ET timezone jobs")
     return scheduler
