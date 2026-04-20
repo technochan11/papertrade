@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: papertrade-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --timeout 120 --workers 2
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+    healthCheckPath: /health
+
+  - type: cron
+    name: papertrade-scheduler
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    schedule: "30 14 * * 1-5"
+    startCommand: python -c "from scheduler import run_main_strategy; run_main_strategy(None)"
+    plan: free

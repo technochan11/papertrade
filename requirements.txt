@@ -1,0 +1,11 @@
+flask
+flask-cors
+yfinance
+pandas
+numpy
+ta
+schedule
+gunicorn
+python-dotenv
+apscheduler
+pytz
