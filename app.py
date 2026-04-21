@@ -2,7 +2,7 @@ import logging
 import os
 from flask import Flask, jsonify, Response
 from flask_cors import CORS
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import sqlite3
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -20,11 +20,47 @@ def get_db():
     return conn
 
 
+def _seed_equity_history():
+    """On a fresh deploy the table is empty. Seed 7 days of flat baseline + today so the chart renders."""
+    try:
+        conn = get_db()
+        count = conn.execute("SELECT COUNT(*) FROM equity_history").fetchone()[0]
+        conn.close()
+        if count > 0:
+            return
+        from portfolio import Portfolio
+        from data import get_current_price
+        p = Portfolio()
+        prices = {sym: get_current_price(sym) for sym in p.positions}
+        prices = {k: v for k, v in prices.items() if v}
+        spy_price = get_current_price("SPY") or 0
+        pv = p.total_value(prices)
+        starting = 500_000.0
+        today = date.today()
+        conn = get_db()
+        for i in range(7, 0, -1):
+            d = (today - timedelta(days=i)).isoformat()
+            conn.execute(
+                "INSERT OR IGNORE INTO equity_history (date,portfolio_value,spy_value,drawdown,regime,open_positions) VALUES (?,?,?,?,?,?)",
+                (d, starting, spy_price, 0.0, "NEUTRAL", 0)
+            )
+        conn.execute(
+            "INSERT OR REPLACE INTO equity_history (date,portfolio_value,spy_value,drawdown,regime,open_positions) VALUES (?,?,?,?,?,?)",
+            (today.isoformat(), pv, spy_price, 0.0, p.regime, len(p.positions))
+        )
+        conn.commit()
+        conn.close()
+        logger.info("Seeded equity history with 8 initial data points")
+    except Exception as e:
+        logger.warning(f"Could not seed equity history: {e}")
+
+
 def init_app():
     from portfolio import Portfolio, init_db
     init_db()
     p = Portfolio()
     p.save()
+    _seed_equity_history()
     try:
         from scheduler import start_scheduler
         start_scheduler()
