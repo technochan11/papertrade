@@ -11,8 +11,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app, origins="*")
 
-DB_PATH = "trades.db"
-
+DB_PATH = os.environ.get('DB_PATH', '/tmp/trades.db')
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -339,7 +338,26 @@ def api_run_strategy():
     except Exception as e:
         logger.error(f"/api/run-strategy error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
+@app.route('/api/backup')
+def backup():
+    conn = get_db()
+    trades = [dict(r) for r in conn.execute('SELECT * FROM trades').fetchall()]
+    equity = [dict(r) for r in conn.execute('SELECT * FROM equity_history').fetchall()]
+    conn.close()
+    return jsonify({'trades': trades, 'equity': equity})
 
+@app.route('/api/restore', methods=['POST'])
+def restore():
+    data = request.json
+    conn = get_db()
+    for row in data.get('trades', []):
+        conn.execute(
+            'INSERT OR IGNORE INTO trades (date,symbol,action,strategy,price,shares,position_value,portfolio_value,reason,profit_pct) VALUES (?,?,?,?,?,?,?,?,?,?)',
+            (row.get('date'),row.get('symbol'),row.get('action'),row.get('strategy'),row.get('price'),row.get('shares'),row.get('position_value'),row.get('portfolio_value'),row.get('reason'),row.get('profit_pct'))
+        )
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'restored'})
 
 if __name__ == "__main__":
     init_app()
