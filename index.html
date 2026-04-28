@@ -272,6 +272,26 @@
       <div class="metric-value" id="mDailyPnl">—</div>
       <div class="metric-sub">Today's change</div>
     </div>
+    <div class="metric-card">
+      <div class="metric-label">Alpha (Ann.)</div>
+      <div class="metric-value" id="mStatAlpha">—</div>
+      <div class="metric-sub">vs SPY risk-adj.</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Beta</div>
+      <div class="metric-value" id="mStatBeta">—</div>
+      <div class="metric-sub">Market sensitivity</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Sharpe Ratio</div>
+      <div class="metric-value" id="mStatSharpe">—</div>
+      <div class="metric-sub">Risk-adjusted return</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Correlation</div>
+      <div class="metric-value" id="mStatCorr">—</div>
+      <div class="metric-sub">vs SPY</div>
+    </div>
   </div>
 
   <!-- REGIME BAR -->
@@ -609,6 +629,32 @@ function updateStrategyWeights(weights) {
   strategyChart.update('none');
 }
 
+// ---- METRICS ----
+async function fetchMetrics() {
+  try {
+    const data = await fetch(`${API_BASE}/api/metrics`).then(r => r.json());
+    if (data.error) return;
+
+    const alphaEl = document.getElementById('mStatAlpha');
+    alphaEl.textContent = (data.alpha >= 0 ? '+' : '') + data.alpha + '%';
+    alphaEl.className = 'metric-value ' + (data.alpha > 0 ? 'positive' : 'negative');
+
+    const betaEl = document.getElementById('mStatBeta');
+    betaEl.textContent = data.beta.toFixed(2);
+    betaEl.className = 'metric-value ' + (data.beta < 0.7 ? 'positive' : data.beta <= 0.9 ? 'neutral-color' : 'negative');
+
+    const sharpeEl = document.getElementById('mStatSharpe');
+    sharpeEl.textContent = data.sharpe.toFixed(2);
+    sharpeEl.className = 'metric-value ' + (data.sharpe > 1.0 ? 'positive' : data.sharpe >= 0.5 ? 'neutral-color' : 'negative');
+
+    const corrEl = document.getElementById('mStatCorr');
+    corrEl.textContent = data.correlation.toFixed(2);
+    corrEl.className = 'metric-value ' + (data.correlation < 0.65 ? 'positive' : data.correlation <= 0.8 ? 'neutral-color' : 'negative');
+  } catch(e) {
+    console.error('Metrics fetch failed:', e);
+  }
+}
+
 // ---- RUN STRATEGY ----
 async function runStrategy() {
   const btn = document.getElementById('runBtn');
@@ -633,7 +679,9 @@ document.addEventListener('DOMContentLoaded', () => {
   initEquityChart();
   initStrategyChart();
   fetchAll();
+  fetchMetrics();
   setInterval(fetchAll, 60000);
+  setInterval(fetchMetrics, 60000);
 });
 </script>
 </body>

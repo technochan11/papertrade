@@ -387,6 +387,61 @@ def api_run_strategy():
     except Exception as e:
         logger.error(f"/api/run-strategy error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
+@app.route('/api/metrics')
+def metrics():
+    try:
+        conn = get_db()
+        rows = conn.execute(
+            'SELECT date, portfolio_value, spy_value '
+            'FROM equity_history ORDER BY date'
+        ).fetchall()
+        conn.close()
+        if len(rows) < 2:
+            return jsonify({
+                'alpha': 0, 'beta': 0,
+                'sharpe': 0, 'correlation': 0
+            })
+        port = [r['portfolio_value'] for r in rows]
+        spy = [r['spy_value'] for r in rows]
+        port_returns = [
+            (port[i]-port[i-1])/port[i-1]
+            for i in range(1, len(port))
+        ]
+        spy_returns = [
+            (spy[i]-spy[i-1])/spy[i-1]
+            for i in range(1, len(spy))
+        ]
+        n = len(port_returns)
+        mean_p = sum(port_returns)/n
+        mean_s = sum(spy_returns)/n
+        cov = sum(
+            (port_returns[i]-mean_p)*(spy_returns[i]-mean_s)
+            for i in range(n)
+        )/n
+        var_s = sum(
+            (spy_returns[i]-mean_s)**2
+            for i in range(n)
+        )/n
+        beta = cov/var_s if var_s > 0 else 0
+        alpha = (mean_p - beta * mean_s) * 252 * 100
+        std_p = (sum((r-mean_p)**2 for r in port_returns)/n)**0.5
+        sharpe = (mean_p*252)/(std_p*(252**0.5)) if std_p > 0 else 0
+        corr_num = cov
+        corr_den = (
+            (sum((r-mean_p)**2 for r in port_returns)/n)**0.5 *
+            (var_s**0.5)
+        )
+        correlation = corr_num/corr_den if corr_den > 0 else 0
+        return jsonify({
+            'alpha': round(alpha, 2),
+            'beta': round(beta, 2),
+            'sharpe': round(sharpe, 2),
+            'correlation': round(correlation, 2)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/backup')
 def backup():
     conn = get_db()
