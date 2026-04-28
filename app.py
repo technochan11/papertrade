@@ -19,6 +19,44 @@ def get_db():
     return conn
 
 
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT,
+            symbol TEXT,
+            action TEXT,
+            strategy TEXT,
+            price REAL,
+            shares REAL,
+            position_value REAL,
+            portfolio_value REAL,
+            reason TEXT,
+            profit_pct REAL
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS equity_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT,
+            portfolio_value REAL,
+            spy_value REAL,
+            drawdown REAL,
+            regime TEXT,
+            open_positions INTEGER
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS portfolio_state (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+
 def _seed_equity_history():
     """On a fresh deploy the table is empty. Seed 7 days of flat baseline + today so the chart renders."""
     try:
@@ -55,8 +93,9 @@ def _seed_equity_history():
 
 
 def init_app():
-    from portfolio import Portfolio, init_db
     init_db()
+    from portfolio import Portfolio, init_db as portfolio_init_db
+    portfolio_init_db()
     p = Portfolio()
     p.save()
     _seed_equity_history()
