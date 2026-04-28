@@ -227,6 +227,8 @@ def api_run_strategy():
             get_regime, get_adx, calculate_weights, detect_gap_ups,
             trend_following, mean_reversion, volatility_reversion,
             earnings_drift, crypto_trend, check_exits,
+            crash_scanner, gld_allocation, short_selling, tlt_hedge,
+            tlt_hedge_exit, gld_rebalance,
         )
         from portfolio import Portfolio
 
@@ -246,6 +248,8 @@ def api_run_strategy():
                 crypto_data[sym] = df
 
         spy_data = market_data.get("SPY")
+        tlt_data = market_data.get("TLT")
+        gld_data = market_data.get("GLD")
         btc_data = crypto_data.get("BTC-USD")
         vix_data = get_vix_data()
 
@@ -268,6 +272,8 @@ def api_run_strategy():
         pos_list = portfolio.positions_as_list()
         all_market = {**market_data, **crypto_data}
         exit_signals = check_exits(pos_list, all_market, crypto_data, regime)
+        exit_signals += tlt_hedge_exit(pos_list, all_market, regime)
+        exit_signals += gld_rebalance(pos_list, all_market, regime)
 
         pv = portfolio._current_value
         exits_done = 0
@@ -302,6 +308,10 @@ def api_run_strategy():
         all_signals += volatility_reversion(spy_data, vix_data, portfolio, weights, max_pos)
         all_signals += earnings_drift(gap_up_tickers, market_data, portfolio, regime, weights, max_pos)
         all_signals += crypto_trend(CRYPTO, crypto_data, btc_data, portfolio, regime, weights, max_pos)
+        all_signals += crash_scanner(STOCKS, market_data, spy_data, portfolio, weights, max_pos)
+        all_signals += gld_allocation(gld_data, portfolio, regime, max_pos)
+        all_signals += short_selling(STOCKS, market_data, spy_data, portfolio, weights, max_pos)
+        all_signals += tlt_hedge(spy_data, tlt_data, portfolio, weights, max_pos)
 
         pv = portfolio._current_value
         entered = []
