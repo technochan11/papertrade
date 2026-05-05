@@ -1,3 +1,4 @@
+# v2.1 - strategy weights migration
 import logging
 import os
 from flask import Flask, jsonify, Response
