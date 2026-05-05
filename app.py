@@ -494,7 +494,32 @@ def restore():
     return jsonify({'status': 'restored'})
 
 if __name__ == "__main__":
-    init_app()
+    
+    @app.route('/api/migrate')
+    def migrate():
+            try:
+                        import json
+                        conn = sqlite3.connect(DB_PATH)
+                        conn.row_factory = sqlite3.Row
+                        row = conn.execute("SELECT value FROM portfolio_state WHERE key='strategy_weights'").fetchone()
+                        if row:
+                                        weights = json.loads(row['value'])
+                                        updated = False
+                                        for strat in ['crash','gld','short','tlt_hedge']:
+                                                            if strat not in weights:
+                                                                                    weights[strat] = 0.1
+                                                                                    updated = True
+                                                                            if updated:
+                                                                                                conn.execute("INSERT OR REPLACE INTO portfolio_state VALUES ('strategy_weights', ?)", (json.dumps(weights),))
+                                                                                                conn.commit()
+                                                                                                conn.close()
+                                                                                                return jsonify({'status': 'migrated', 'weights': weights})
+                                                                                        conn.close()
+                                                    return jsonify({'status': 'no change needed'})
+            except Exception as e:
+                        return jsonify({'error': str(e)}), 500
+                
+        init_app()
     port = int(os.environ.get("PORT", 5005))
     app.run(host="0.0.0.0", port=port, debug=False)
 else:
