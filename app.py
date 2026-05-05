@@ -34,6 +34,36 @@ def init_db():
 
 init_db()
 
+
+def migrate_strategy_weights():
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            "SELECT value FROM portfolio_state WHERE key='strategy_weights'"
+        ).fetchone()
+        if row:
+            import json
+            weights = json.loads(row['value'])
+            updated = False
+            for strat in ['crash','gld','short','tlt_hedge']:
+                if strat not in weights:
+                    weights[strat] = 0.1
+                    updated = True
+            if updated:
+                conn.execute(
+                    "INSERT OR REPLACE INTO portfolio_state VALUES ('strategy_weights', ?)",
+                    (json.dumps(weights),)
+                )
+                conn.commit()
+    except Exception as e:
+        pass
+    finally:
+        conn.close()
+
+
+migrate_strategy_weights()
+
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
