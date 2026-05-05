@@ -13,48 +13,31 @@ CORS(app, origins="*")
 
 DB_PATH = os.environ.get('DB_PATH', '/tmp/trades.db')
 
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('''CREATE TABLE IF NOT EXISTS trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT, symbol TEXT, action TEXT,
+        strategy TEXT, price REAL, shares REAL,
+        position_value REAL, portfolio_value REAL,
+        reason TEXT, profit_pct REAL)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS equity_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT, portfolio_value REAL, spy_value REAL,
+        drawdown REAL, regime TEXT, open_positions INTEGER)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS portfolio_state (
+        key TEXT PRIMARY KEY, value TEXT)''')
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
-
-
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT,
-            symbol TEXT,
-            action TEXT,
-            strategy TEXT,
-            price REAL,
-            shares REAL,
-            position_value REAL,
-            portfolio_value REAL,
-            reason TEXT,
-            profit_pct REAL
-        )
-    ''')
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS equity_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT,
-            portfolio_value REAL,
-            spy_value REAL,
-            drawdown REAL,
-            regime TEXT,
-            open_positions INTEGER
-        )
-    ''')
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS portfolio_state (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
 
 
 def _seed_equity_history():
@@ -93,7 +76,6 @@ def _seed_equity_history():
 
 
 def init_app():
-    init_db()
     from portfolio import Portfolio, init_db as portfolio_init_db
     portfolio_init_db()
     p = Portfolio()
@@ -311,8 +293,8 @@ def api_run_strategy():
         pos_list = portfolio.positions_as_list()
         all_market = {**market_data, **crypto_data}
         exit_signals = check_exits(pos_list, all_market, crypto_data, regime)
-        exit_signals += tlt_hedge_exit(pos_list, all_market, regime)
-        exit_signals += gld_rebalance(pos_list, all_market, regime)
+        exit_signals += tlt_hedge_exit(market_data.get("TLT"), spy_data, pos_list)
+        exit_signals += gld_rebalance(market_data.get("GLD"), portfolio, regime)
 
         pv = portfolio._current_value
         exits_done = 0
@@ -372,7 +354,24 @@ def api_run_strategy():
 
         portfolio.update_caution(portfolio.total_value(final_prices))
         spy_price = get_current_price("SPY") or 0
-        portfolio.save_equity_snapshot(spy_price, regime, final_prices)
+        conn = get_db()
+        baseline_row = conn.execute(
+            "SELECT value FROM portfolio_state WHERE key='spy_baseline'"
+        ).fetchone()
+        conn.close()
+        if baseline_row is None or float(baseline_row["value"]) == 0:
+            spy_baseline = spy_price
+            conn = get_db()
+            conn.execute(
+                "INSERT OR IGNORE INTO portfolio_state (key, value) VALUES ('spy_baseline', ?)",
+                (str(spy_baseline),)
+            )
+            conn.commit()
+            conn.close()
+        else:
+            spy_baseline = float(baseline_row["value"])
+        spy_value = 500_000.0 * (spy_price / spy_baseline) if spy_baseline else spy_price
+        portfolio.save_equity_snapshot(spy_value, regime, final_prices)
         portfolio.save()
 
         return jsonify({

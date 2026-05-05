@@ -90,6 +90,10 @@ def default_state():
             "vol_reversion": 0.2,
             "earnings_drift": 0.2,
             "crypto_trend": 0.2,
+            "crash": 0.2,
+            "gld": 0.2,
+            "short": 0.1,
+            "tlt_hedge": 0.1,
         },
         "trade_history": [],
     }
