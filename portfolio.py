@@ -98,11 +98,14 @@ def save_state(state):
     conn.close()
 
 
-def get_portfolio_value(market_data):
-    state = get_state()
-    total = state["cash"]
-    for pos in state["positions"]:
-        price = market_data.get(pos["ticker"], {}).get("price", pos["entry_price"])
+def get_portfolio_value(state, market_data):
+    total = float(state.get("cash", 0))
+    for pos in state.get("positions", []):
+        df = market_data.get(pos["ticker"])
+        try:
+            price = float(df["Close"].dropna().iloc[-1]) if df is not None else pos["entry_price"]
+        except Exception:
+            price = pos["entry_price"]
         total += price * pos["shares"]
     return total
 
