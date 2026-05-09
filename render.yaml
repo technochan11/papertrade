@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: papertrade
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: PORT
+        value: 10000
+    autoDeploy: true
+    branch: master

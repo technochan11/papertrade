@@ -1,0 +1,10 @@
+flask
+flask-cors
+apscheduler
+yfinance
+pandas
+ta
+psycopg2-binary
+gunicorn
+pytz
+numpy
