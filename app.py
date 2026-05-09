@@ -18,14 +18,9 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__, static_folder='.')
 CORS(app)
 
-_scheduler = None
-
-
-@app.before_first_request
-def startup():
-    global _scheduler
+with app.app_context():
     init_db()
-    _scheduler = start_scheduler()
+    start_scheduler()
 
 
 @app.route('/')
