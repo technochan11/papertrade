@@ -56,6 +56,14 @@ def _get_portfolio_metrics(state, market_data):
     }
 
 
+def _safe_last(df, col, default=0):
+    try:
+        s = df[col].dropna()
+        return float(s.iloc[-1]) if len(s) > 0 else default
+    except Exception:
+        return default
+
+
 @app.route('/api/portfolio')
 def api_portfolio():
     try:
@@ -65,13 +73,14 @@ def api_portfolio():
 
         spy_df = md.get('SPY')
         spy_price = get_current_price('SPY') or 0
-        ema50 = float(spy_df['EMA50'].dropna().iloc[-1]) if spy_df is not None else 0
-        ema200 = float(spy_df['EMA200'].dropna().iloc[-1]) if spy_df is not None else 0
+        ema50 = _safe_last(spy_df, 'EMA50') if spy_df is not None else 0
+        ema200 = _safe_last(spy_df, 'EMA200') if spy_df is not None else 0
+        adx = _safe_last(spy_df, 'ADX') if spy_df is not None else 0
         try:
-            spy_1m = (float(spy_df['Close'].iloc[-1]) - float(spy_df['Close'].iloc[-23])) / float(spy_df['Close'].iloc[-23])
+            close = spy_df['Close'].dropna() if spy_df is not None else None
+            spy_1m = (float(close.iloc[-1]) - float(close.iloc[-23])) / float(close.iloc[-23]) if close is not None and len(close) >= 23 else 0
         except Exception:
             spy_1m = 0
-        adx = float(spy_df['ADX'].dropna().iloc[-1]) if spy_df is not None else 0
         vix = get_vix()
 
         metrics.update({
@@ -88,8 +97,20 @@ def api_portfolio():
         })
         return jsonify(metrics)
     except Exception as e:
-        logger.error(f'/api/portfolio error: {e}', exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        logger.error(f'Portfolio error: {e}', exc_info=True)
+        return jsonify({
+            'regime': 'NEUTRAL',
+            'cash': 500000,
+            'portfolio_value': 500000,
+            'total_return': 0,
+            'daily_pnl': 0,
+            'open_positions': 0,
+            'drawdown': 0,
+            'strategy_weights': {},
+            'alpha': 0, 'beta': 1,
+            'sharpe': 0, 'correlation': 0,
+            'vix': 0, 'error': str(e),
+        })
 
 
 @app.route('/api/positions')
