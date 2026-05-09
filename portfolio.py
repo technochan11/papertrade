@@ -103,7 +103,8 @@ def get_portfolio_value(state, market_data):
     for pos in state.get("positions", []):
         df = market_data.get(pos["ticker"])
         try:
-            price = float(df["Close"].dropna().iloc[-1]) if df is not None else pos["entry_price"]
+            series = df["Close"].dropna() if df is not None else None
+            price = float(series.iloc[-1]) if series is not None and len(series) > 0 else pos["entry_price"]
         except Exception:
             price = pos["entry_price"]
         total += price * pos["shares"]
@@ -128,12 +129,26 @@ def calculate_position_size(portfolio_value, strategy_weight, stop_pct, vix, str
     return min(size, portfolio_value * 0.25)
 
 
+def _df_latest(df, col):
+    try:
+        series = df[col].dropna()
+        return float(series.iloc[-1]) if len(series) > 0 else None
+    except Exception:
+        return None
+
+
 def check_exits(positions, market_data, regime):
     exits = []
     for pos in positions:
         ticker = pos["ticker"]
-        data = market_data.get(ticker, {})
-        price = data.get("price", pos["entry_price"])
+        df = market_data.get(ticker)
+        if df is None or len(df) == 0:
+            continue
+        price = _df_latest(df, "Close") or pos["entry_price"]
+        rsi = _df_latest(df, "RSI14")
+        ema20 = _df_latest(df, "EMA20")
+        ema50 = _df_latest(df, "EMA50")
+
         profit_pct = (price - pos["entry_price"]) / pos["entry_price"]
         strategy = pos.get("strategy", "")
         days_held = pos.get("days_held", 0)
@@ -145,10 +160,9 @@ def check_exits(positions, market_data, regime):
         elif strategy == "crash":
             if days_held >= 3:
                 reason = "crash_time_exit"
-            elif data.get("rsi", 0) > 45:
+            elif rsi is not None and rsi > 45:
                 reason = "crash_rsi_exit"
         else:
-            stop_pct = None
             if profit_pct >= 1.0:
                 stop_pct = 0.93
             elif profit_pct >= 0.50:
@@ -157,13 +171,10 @@ def check_exits(positions, market_data, regime):
                 stop_pct = 0.87
             else:
                 stop_pct = 0.78
-            trailing_stop = pos["entry_price"] * (1 + profit_pct * stop_pct) if profit_pct > 0 else pos.get("stop_price", 0)
             if pos.get("stop_price") and price <= pos["stop_price"]:
                 reason = "trailing_stop"
             if profit_pct >= 1.0:
                 reason = reason or "partial_harvest"
-            ema20 = data.get("ema20")
-            ema50 = data.get("ema50")
             if strategy == "trend" and ema20 and ema50:
                 if ema20 < ema50 * 0.95 or regime == "BEAR":
                     reason = "trend_exit"

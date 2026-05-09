@@ -65,8 +65,10 @@ def get_vix():
             return 20.0
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-        val = df["Close"].dropna().iloc[-1]
-        return float(val)
+        series = df["Close"].dropna()
+        if len(series) == 0:
+            return 20.0
+        return float(series.iloc[-1])
     except Exception:
         return 20.0
 
@@ -89,7 +91,9 @@ def get_current_price(ticker):
             return None
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-        val = df["Close"].dropna().iloc[-1]
-        return float(val)
+        series = df["Close"].dropna()
+        if len(series) == 0:
+            return None
+        return float(series.iloc[-1])
     except Exception:
         return None
