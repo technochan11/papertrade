@@ -191,7 +191,12 @@ def execute_trade(signal, portfolio_value, cash, strategy_weights, vix, regime):
     price = signal.get("price")
     if not ticker or not strategy or not price or price <= 0:
         return None
-    max_positions = {"BULL": 5, "NEUTRAL": 4, "BEAR": 3}.get(regime, 4)
+    if regime == "BULL":
+        max_positions = 5
+    elif regime == "NEUTRAL":
+        max_positions = 4
+    else:
+        max_positions = 3
     state = get_state()
     if len(state["positions"]) >= max_positions:
         return None

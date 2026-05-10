@@ -69,7 +69,12 @@ def run_strategies():
         signals = run_all_strategies(MARKET_DATA, REGIME, vix, vix_20d_avg, spy_df, GAP_UP_STOCKS, has_gld)
 
         drawdown = get_drawdown(portfolio_value, state.get('starting_capital', 500000))
-        max_pos = {'BULL': 5, 'NEUTRAL': 4, 'BEAR': 3}.get(REGIME, 4)
+        if REGIME == "BULL":
+            max_pos = 5
+        elif REGIME == "NEUTRAL":
+            max_pos = 4
+        else:
+            max_pos = 3
 
         for signal in signals:
             if len(positions) >= max_pos:
