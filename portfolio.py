@@ -111,11 +111,18 @@ def init_db():
                 spy_val  += spy_deltas[i - 1]
             regime    = regimes[i] if i < len(regimes) else "BULL"
             drawdown  = max(-0.015, (port_val - 500000) / 500000) if port_val < 500000 else 0.0
-            cur.execute(
-                f"INSERT INTO equity_history (date, portfolio_value, spy_value, drawdown, regime, open_positions) "
-                f"VALUES ({p},{p},{p},{p},{p},{p})",
-                (d, round(port_val, 2), round(spy_val, 2), round(drawdown, 4), regime, 0),
-            )
+            if DATABASE_URL:
+                cur.execute(
+                    "INSERT INTO equity_history (date, portfolio_value, spy_value, drawdown, regime, open_positions) "
+                    f"VALUES ({p},{p},{p},{p},{p},{p}) ON CONFLICT (date) DO NOTHING",
+                    (d, round(port_val, 2), round(spy_val, 2), round(drawdown, 4), regime, 0),
+                )
+            else:
+                cur.execute(
+                    "INSERT OR IGNORE INTO equity_history (date, portfolio_value, spy_value, drawdown, regime, open_positions) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (d, round(port_val, 2), round(spy_val, 2), round(drawdown, 4), regime, 0),
+                )
 
         # ── Seed trades: 22 closed trades + 4 open BUYs ──
         seed_trades = [
@@ -149,11 +156,13 @@ def init_db():
             ("2026-05-07", "NVDA",  "BUY",  "momentum", 124.60, 280, 34888.00, 512099.00, "momentum_signal",  None),
         ]
         for t in seed_trades:
-            cur.execute(
-                f"INSERT INTO trades (date,symbol,action,strategy,price,shares,position_value,portfolio_value,reason,profit_pct) "
-                f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
-                t,
-            )
+            cur.execute(f"SELECT count(*) FROM trades WHERE date={p} AND symbol={p} AND action={p}", (t[0], t[1], t[2]))
+            if cur.fetchone()[0] == 0:
+                cur.execute(
+                    f"INSERT INTO trades (date,symbol,action,strategy,price,shares,position_value,portfolio_value,reason,profit_pct) "
+                    f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
+                    t,
+                )
 
         conn.commit()
     cur.close()
