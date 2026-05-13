@@ -69,12 +69,7 @@ def run_strategies():
         signals = run_all_strategies(MARKET_DATA, REGIME, vix, vix_20d_avg, spy_df, GAP_UP_STOCKS, has_gld)
 
         drawdown = get_drawdown(portfolio_value, state.get('starting_capital', 500000))
-        if REGIME == "BULL":
-            max_pos = 5
-        elif REGIME == "NEUTRAL":
-            max_pos = 4
-        else:
-            max_pos = 3
+        max_pos = 5
 
         for signal in signals:
             if len(positions) >= max_pos:
@@ -122,6 +117,7 @@ def run_strategies():
         state['cash'] = cash
         save_state(state)
         logger.info(f'Strategies run. Positions: {len(positions)}, Cash: ${cash:,.0f}')
+        daily_snapshot()
     except Exception as e:
         logger.error(f'run_strategies error: {e}', exc_info=True)
 
@@ -164,6 +160,7 @@ def check_exits_job():
         state['cash'] = cash
         save_state(state)
         logger.info(f'Exits checked. Closed {len(exits)}, remaining: {len(remaining)}')
+        daily_snapshot()
     except Exception as e:
         logger.error(f'check_exits error: {e}', exc_info=True)
 

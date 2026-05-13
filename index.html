@@ -634,6 +634,7 @@ function renderEquityChart(history) {
           ticks: { color:'#8892a4', maxTicksLimit:10 }
         },
         y: {
+          grace: '5%',
           grid: { color:'rgba(42,45,58,.6)' },
           ticks: { color:'#8892a4', callback: v => fmtDollar(v) }
         }
@@ -714,11 +715,11 @@ function renderRisk(portfolio) {
   const p = portfolio || {};
   const utilized = p.cash != null && p.portfolio_value
     ? Math.round((1 - p.cash / p.portfolio_value) * 100) : mock.portfolio_utilized;
-  const ddPct    = Math.abs(p.drawdown != null ? p.drawdown * 100 : mock.drawdown_pct);
+  const ddPct    = p.max_drawdown != null ? Math.abs(p.max_drawdown) : mock.drawdown_pct;
   const slots    = p.open_positions != null ? p.open_positions : mock.position_slots_used;
   const maxSlots = p.max_positions  != null ? p.max_positions  : mock.position_slots_max;
   const cashAvail = p.cash != null ? p.cash : mock.cash_available;
-  const cautionMode = p.drawdown != null ? p.drawdown > 0.12 : mock.caution_mode;
+  const cautionMode = p.max_drawdown != null ? Math.abs(p.max_drawdown) > 12 : mock.caution_mode;
   const slotsPct = Math.round((slots / maxSlots) * 100);
 
   const ddClass = ddPct > 10 ? 'danger' : ddPct > 5 ? 'warn' : '';

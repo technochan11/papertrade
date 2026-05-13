@@ -44,17 +44,26 @@ def _get_portfolio_metrics(state, market_data):
     spy_return = ((spy_price / spy_baseline) - 1) if spy_baseline and spy_price else 0
     alpha = total_return - spy_return
 
-    max_pos = 5 if REGIME == 'BULL' else (4 if REGIME == 'NEUTRAL' else 3)
+    try:
+        from portfolio import get_conn
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute('SELECT portfolio_value FROM equity_history ORDER BY id DESC LIMIT 2')
+        eq_rows = cur.fetchall()
+        conn.close()
+        daily_pnl = round(float(eq_rows[0][0]) - float(eq_rows[1][0]), 2) if len(eq_rows) >= 2 else 0.0
+    except Exception:
+        daily_pnl = 0.0
+
     return {
         'portfolio_value': round(portfolio_value, 2),
-        'total_return': round(total_return, 4),
-        'daily_pnl': 0.0,
-        'drawdown': round(drawdown, 4),
-        'alpha': round(alpha, 4),
+        'total_return': round(total_return * 100, 2),
+        'vs_spy_alpha': round(alpha * 100, 2),
+        'max_drawdown': round(-drawdown * 100, 2),
+        'daily_pnl': daily_pnl,
         'open_positions': len(state.get('positions', [])),
-        'max_positions': max_pos,
+        'max_positions': 5,
         'cash': round(state.get('cash', 0), 2),
-        'regime': REGIME,
     }
 
 
@@ -86,12 +95,15 @@ def api_portfolio():
         vix = get_vix()
 
         metrics.update({
-            'spy_price': round(spy_price, 2),
-            'spy_ema50': round(ema50, 2),
-            'spy_ema200': round(ema200, 2),
-            'spy_1m_return': round(spy_1m, 4),
-            'adx': round(adx, 2),
-            'vix': round(vix, 2),
+            'regime': {
+                'label':     REGIME,
+                'spy_price': round(spy_price, 2),
+                'ema50':     round(ema50, 2),
+                'ema200':    round(ema200, 2),
+                'return_1m': round(spy_1m * 100, 2),
+                'adx':       round(adx, 2),
+                'vix':       round(vix, 2),
+            },
             'strategy_weights': STRATEGY_WEIGHTS,
             'beta': 1.0,
             'sharpe': 0.0,
@@ -101,17 +113,18 @@ def api_portfolio():
     except Exception as e:
         logger.error(f'Portfolio error: {e}', exc_info=True)
         return jsonify({
-            'regime': 'NEUTRAL',
+            'regime': {'label': 'NEUTRAL', 'spy_price': 0, 'ema50': 0, 'ema200': 0, 'return_1m': 0, 'adx': 0, 'vix': 0},
             'cash': 500000,
             'portfolio_value': 500000,
             'total_return': 0,
+            'vs_spy_alpha': 0,
+            'max_drawdown': 0,
             'daily_pnl': 0,
             'open_positions': 0,
-            'drawdown': 0,
+            'max_positions': 5,
             'strategy_weights': {},
-            'alpha': 0, 'beta': 1,
-            'sharpe': 0, 'correlation': 0,
-            'vix': 0, 'error': str(e),
+            'beta': 1, 'sharpe': 0, 'correlation': 0,
+            'error': str(e),
         })
 
 
@@ -157,14 +170,63 @@ def api_trades():
 @app.route('/api/equity-history')
 def api_equity_history():
     try:
-        from portfolio import get_conn
+        from portfolio import get_conn, get_state as _get_state
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute('SELECT date, portfolio_value, spy_value FROM equity_history ORDER BY date DESC LIMIT 90')
-        rows = cur.fetchall()
+
+        # Deduplicate by date — keep the latest entry per date
+        cur.execute('''
+            SELECT date, portfolio_value, spy_value
+            FROM equity_history
+            WHERE id IN (SELECT MAX(id) FROM equity_history GROUP BY date)
+            ORDER BY date ASC LIMIT 90
+        ''')
+        rows = list(cur.fetchall())
+
+        if len(rows) < 2:
+            # Synthesize from trades: each trade row stores portfolio_value at that moment
+            cur.execute('SELECT date, portfolio_value FROM trades ORDER BY id ASC')
+            trade_rows = cur.fetchall()
+            if trade_rows:
+                seen = {}
+                for date_str, pv in trade_rows:
+                    seen[date_str[:10]] = float(pv)
+                state = _get_state()
+                spy_baseline = state.get('spy_baseline') or 0
+                spy_now = get_current_price('SPY') or spy_baseline or 0
+                dates = sorted(seen.keys())
+                n = len(dates)
+                synth = []
+                for i, d in enumerate(dates):
+                    pv = seen[d]
+                    # linear interpolation of SPY from baseline → current
+                    frac = i / max(n - 1, 1)
+                    spy_val = round(spy_baseline + frac * (spy_now - spy_baseline) * 500000 / spy_now, 2) if spy_now else 500000
+                    synth.append((d, pv, spy_val))
+                rows = synth
+
         conn.close()
-        rows.reverse()
-        return jsonify([{'date': r[0], 'portfolio_value': r[1], 'spy_value': r[2]} for r in rows])
+
+        # Always append the live current value as today's final point
+        try:
+            state = _get_state()
+            md = MARKET_DATA if MARKET_DATA else {}
+            live_pv = get_portfolio_value(state, md)
+            spy_now = get_current_price('SPY') or 0
+            state2 = _get_state()
+            spy_baseline = state2.get('spy_baseline') or spy_now
+            spy_scaled = round(spy_now / spy_baseline * 500000, 2) if spy_baseline else 500000
+            today = datetime.now().strftime('%Y-%m-%d')
+            if not rows or rows[-1][0] != today:
+                rows.append((today, live_pv, spy_scaled))
+            else:
+                rows[-1] = (today, live_pv, spy_scaled)
+        except Exception:
+            pass
+
+        return jsonify([{'date': r[0], 'portfolio_value': round(float(r[1]), 2),
+                         'spy_value': round(float(r[2]), 2) if r[2] is not None else None}
+                        for r in rows])
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -180,7 +242,7 @@ def api_metrics():
         conn.close()
 
         if len(rows) < 10:
-            return jsonify({'alpha': 0, 'beta': 1, 'sharpe': 0, 'correlation': 0})
+            return jsonify({'alpha_ann': 0, 'beta': 1, 'sharpe': 0, 'correlation': 0})
 
         import numpy as np
         port = [r[0] for r in rows]
@@ -196,7 +258,7 @@ def api_metrics():
         sharpe = float(np.mean(port_ret) / np.std(port_ret) * (252 ** 0.5)) if np.std(port_ret) > 0 else 0
         correlation = float(np.corrcoef(port_ret, spy_ret)[0, 1])
 
-        return jsonify({'alpha': round(alpha, 4), 'beta': round(beta, 4),
+        return jsonify({'alpha_ann': round(alpha * 100, 2), 'beta': round(beta, 4),
                         'sharpe': round(sharpe, 4), 'correlation': round(correlation, 4)})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
