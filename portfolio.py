@@ -60,9 +60,9 @@ def init_db():
     conn.commit()
     cur.execute(f"SELECT value FROM portfolio_state WHERE key = {PLACEHOLDER}", ("state",))
     row = cur.fetchone()
-    cur.execute("SELECT count(*) FROM trades")
-    trade_count = (cur.fetchone()[0] if DATABASE_URL else cur.fetchone()[0])
-    if row is None or trade_count == 0:
+    cur.execute("SELECT count(*) FROM trades WHERE date < '2026-04-01'")
+    seed_count = cur.fetchone()[0]
+    if row is None or seed_count == 0:
         initial = {
             "positions": [
                 {"ticker": "JPM",  "strategy": "momentum", "entry_price": 274.80, "shares": 75,  "stop_price": 261.06, "entry_date": "2026-04-28", "days_held": 14, "reason": "momentum_signal"},
@@ -307,7 +307,7 @@ def log_trade(trade):
         f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
         (
             trade.get("date", str(date.today())),
-            trade.get("ticker"),
+            trade.get("symbol") or trade.get("ticker"),
             trade.get("action", "BUY"),
             trade.get("strategy"),
             trade.get("price"),
