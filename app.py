@@ -44,6 +44,7 @@ def _get_portfolio_metrics(state, market_data):
     spy_return = ((spy_price / spy_baseline) - 1) if spy_baseline and spy_price else 0
     alpha = total_return - spy_return
 
+    max_pos = 5 if REGIME == 'BULL' else (4 if REGIME == 'NEUTRAL' else 3)
     return {
         'portfolio_value': round(portfolio_value, 2),
         'total_return': round(total_return, 4),
@@ -51,6 +52,7 @@ def _get_portfolio_metrics(state, market_data):
         'drawdown': round(drawdown, 4),
         'alpha': round(alpha, 4),
         'open_positions': len(state.get('positions', [])),
+        'max_positions': max_pos,
         'cash': round(state.get('cash', 0), 2),
         'regime': REGIME,
     }

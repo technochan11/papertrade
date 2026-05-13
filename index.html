@@ -482,9 +482,9 @@ function mockEquityHistory() {
     port += (Math.random()-0.47)*4000;
     spy  += (Math.random()-0.48)*3500;
     pts.push({
-      date:  new Date(now - i*86400000).toISOString().slice(0,10),
-      portfolio: Math.round(port),
-      spy:       Math.round(spy),
+      date:            new Date(now - i*86400000).toISOString().slice(0,10),
+      portfolio_value: Math.round(port),
+      spy_value:       Math.round(spy),
     });
   }
   return pts;
@@ -495,8 +495,8 @@ function mockRisk(portfolio) {
     drawdown_pct:       3.14,
     portfolio_utilized: 72.3,
     cash_available:     val * 0.277,
-    position_slots_used:7,
-    position_slots_max: 15,
+    position_slots_used:3,
+    position_slots_max: 5,
     caution_mode:       false,
   };
 }
@@ -578,8 +578,8 @@ function renderRegime(portfolio) {
 function renderEquityChart(history) {
   const data = history && history.length ? history : mockEquityHistory();
   const labels = data.map(d => d.date);
-  const portVals = data.map(d => d.portfolio);
-  const spyVals  = data.map(d => d.spy);
+  const portVals = data.map(d => d.portfolio_value);
+  const spyVals  = data.map(d => d.spy_value);
 
   const ctx = document.getElementById('equity-chart').getContext('2d');
   if (equityChart) equityChart.destroy();
@@ -651,14 +651,14 @@ function renderPositions(positions) {
   }
   tbody.innerHTML = rows.map(r => `
     <tr>
-      <td><strong>${r.symbol}</strong></td>
+      <td><strong>${r.ticker || r.symbol}</strong></td>
       <td>${r.strategy}</td>
-      <td>${fmtDollarDec(r.entry)}</td>
-      <td>${fmtDollarDec(r.current)}</td>
+      <td>${fmtDollarDec(r.entry_price != null ? r.entry_price : r.entry)}</td>
+      <td>${fmtDollarDec(r.current_price != null ? r.current_price : r.current)}</td>
       <td class="${pnlClass(r.pnl_pct)}">${fmtPct(r.pnl_pct)}</td>
-      <td>${fmtDollarDec(r.stop)}</td>
-      <td>${fmtDollar(r.value)}</td>
-      <td>${r.days}d</td>
+      <td>${fmtDollarDec(r.stop_price != null ? r.stop_price : r.stop)}</td>
+      <td>${fmtDollar(r.position_value != null ? r.position_value : r.value)}</td>
+      <td>${(r.days_held != null ? r.days_held : r.days)}d</td>
     </tr>
   `).join('');
 }
@@ -709,12 +709,16 @@ function renderStrategyChart(weights) {
   });
 }
 
-function renderRisk(risk, portfolio) {
-  const r = risk || mockRisk(portfolio);
-  const utilized = r.portfolio_utilized || 0;
-  const ddPct    = Math.abs(r.drawdown_pct || 0);
-  const slots    = r.position_slots_used || 0;
-  const maxSlots = r.position_slots_max  || 15;
+function renderRisk(portfolio) {
+  const mock = mockRisk(portfolio);
+  const p = portfolio || {};
+  const utilized = p.cash != null && p.portfolio_value
+    ? Math.round((1 - p.cash / p.portfolio_value) * 100) : mock.portfolio_utilized;
+  const ddPct    = Math.abs(p.drawdown != null ? p.drawdown * 100 : mock.drawdown_pct);
+  const slots    = p.open_positions != null ? p.open_positions : mock.position_slots_used;
+  const maxSlots = p.max_positions  != null ? p.max_positions  : mock.position_slots_max;
+  const cashAvail = p.cash != null ? p.cash : mock.cash_available;
+  const cautionMode = p.drawdown != null ? p.drawdown > 0.12 : mock.caution_mode;
   const slotsPct = Math.round((slots / maxSlots) * 100);
 
   const ddClass = ddPct > 10 ? 'danger' : ddPct > 5 ? 'warn' : '';
@@ -738,7 +742,7 @@ function renderRisk(risk, portfolio) {
     </div>
     <div class="risk-row">
       <span class="risk-label">Cash Available</span>
-      <span class="risk-val pos">${fmtDollar(r.cash_available)}</span>
+      <span class="risk-val pos">${fmtDollar(cashAvail)}</span>
     </div>
     <div>
       <div class="risk-row">
@@ -747,9 +751,9 @@ function renderRisk(risk, portfolio) {
       </div>
       <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${slotsPct}%"></div></div>
     </div>
-    <div class="${r.caution_mode ? 'caution-indicator' : 'caution-indicator off'}">
+    <div class="${cautionMode ? 'caution-indicator' : 'caution-indicator off'}">
       <div class="dot"></div>
-      ${r.caution_mode ? 'CAUTION MODE ACTIVE' : 'Normal Trading Mode'}
+      ${cautionMode ? 'CAUTION MODE ACTIVE' : 'Normal Trading Mode'}
     </div>
   `;
 }
@@ -771,7 +775,7 @@ function renderTrades(trades) {
         <td>${r.strategy}</td>
         <td>${fmtDollarDec(r.price)}</td>
         <td>${Number(r.shares).toLocaleString()}</td>
-        <td class="${pnlClass(r.pnl_pct)}">${r.pnl_pct != null ? fmtPct(r.pnl_pct) : '—'}</td>
+        <td class="${pnlClass(r.profit_pct != null ? r.profit_pct : r.pnl_pct)}">${(r.profit_pct != null ? r.profit_pct : r.pnl_pct) != null ? fmtPct(r.profit_pct != null ? r.profit_pct : r.pnl_pct) : '—'}</td>
       </tr>
     `;
   }).join('');
@@ -793,7 +797,7 @@ async function refresh() {
   renderEquityChart(history);
   renderPositions(positions);
   renderStrategyChart(null); // weights are in portfolio or separate endpoint
-  renderRisk(null, portfolio);
+  renderRisk(portfolio);
   renderTrades(trades);
 }
 
