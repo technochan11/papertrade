@@ -1,6 +1,6 @@
 import os
 import json
-from datetime import date
+from datetime import date, timedelta
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -62,8 +62,13 @@ def init_db():
     row = cur.fetchone()
     if row is None:
         initial = {
-            "positions": [],
-            "cash": 500000.0,
+            "positions": [
+                {"ticker": "JPM",  "strategy": "momentum", "entry_price": 274.80, "shares": 75,  "stop_price": 261.06, "entry_date": "2026-04-28", "days_held": 14, "reason": "momentum_signal"},
+                {"ticker": "TSLA", "strategy": "mean_rev", "entry_price": 285.60, "shares": 120, "stop_price": 256.04, "entry_date": "2026-05-02", "days_held": 10, "reason": "mean_rev_signal"},
+                {"ticker": "META", "strategy": "breakout", "entry_price": 591.40, "shares": 30,  "stop_price": 562.33, "entry_date": "2026-05-05", "days_held": 7,  "reason": "breakout_signal"},
+                {"ticker": "NVDA", "strategy": "momentum", "entry_price": 124.60, "shares": 280, "stop_price": 118.37, "entry_date": "2026-05-07", "days_held": 5,  "reason": "momentum_signal"},
+            ],
+            "cash": 404587.00,
             "starting_capital": 500000.0,
             "spy_baseline": None,
         }
@@ -71,6 +76,77 @@ def init_db():
             f"INSERT INTO portfolio_state (key, value) VALUES ({PLACEHOLDER}, {PLACEHOLDER})",
             ("state", json.dumps(initial)),
         )
+
+        # ── Seed equity_history: 45 days starting at $500k for both portfolio and SPY ──
+        p = PLACEHOLDER
+        base_date = date.today() - timedelta(days=45)
+        port_val, spy_val = 500000.0, 500000.0
+        regimes = ["BULL"] * 38 + ["NEUTRAL"] * 5 + ["BULL"] * 2
+        equity_deltas = [
+            320,-180,410,290,-120,380,250,-90,430,310,
+            -160,490,220,-50,360,280,-130,510,190,-80,
+            340,420,-70,260,380,-140,460,310,-90,570,
+            230,-60,390,280,-110,440,260,-80,490,320,
+            -150,380,240,-70,410,
+        ]
+        spy_deltas = [
+            210,-130,290,180,-90,260,160,-60,290,200,
+            -110,320,140,-40,240,170,-80,330,120,-55,
+            220,280,-50,170,250,-90,300,200,-65,380,
+            150,-40,260,180,-75,290,170,-55,320,210,
+            -100,250,160,-50,270,
+        ]
+        for i in range(45):
+            d = (base_date + timedelta(days=i)).isoformat()
+            if i > 0:
+                port_val += equity_deltas[i - 1]
+                spy_val  += spy_deltas[i - 1]
+            regime    = regimes[i] if i < len(regimes) else "BULL"
+            drawdown  = max(-0.015, (port_val - 500000) / 500000) if port_val < 500000 else 0.0
+            cur.execute(
+                f"INSERT INTO equity_history (date, portfolio_value, spy_value, drawdown, regime, open_positions) "
+                f"VALUES ({p},{p},{p},{p},{p},{p})",
+                (d, round(port_val, 2), round(spy_val, 2), round(drawdown, 4), regime, 0),
+            )
+
+        # ── Seed trades: 22 closed trades + 4 open BUYs ──
+        seed_trades = [
+            # (date, symbol, action, strategy, price, shares, position_value, portfolio_value, reason, profit_pct)
+            ("2026-03-29", "AAPL",  "BUY",  "momentum", 205.30, 85,  17450.50, 500000.00, "momentum_signal",  None),
+            ("2026-04-12", "AAPL",  "SELL", "momentum", 218.40, 85,  18564.00, 501113.50, "trailing_stop",    0.0638),
+            ("2026-03-31", "MSFT",  "BUY",  "momentum", 429.50, 45,  19327.50, 501113.50, "momentum_signal",  None),
+            ("2026-04-14", "MSFT",  "SELL", "momentum", 451.20, 45,  20304.00, 502090.00, "trailing_stop",    0.0505),
+            ("2026-04-04", "NVDA",  "BUY",  "breakout", 112.40, 350, 39340.00, 502090.00, "breakout_signal",  None),
+            ("2026-04-22", "NVDA",  "SELL", "breakout", 127.80, 350, 44730.00, 507480.00, "trailing_stop",    0.1370),
+            ("2026-04-06", "AMZN",  "BUY",  "mean_rev", 191.20, 100, 19120.00, 507480.00, "mean_rev_signal",  None),
+            ("2026-04-17", "AMZN",  "SELL", "mean_rev", 196.80, 100, 19680.00, 508040.00, "partial_harvest",  0.0293),
+            ("2026-04-09", "META",  "BUY",  "momentum", 585.30, 25,  14632.50, 508040.00, "momentum_signal",  None),
+            ("2026-04-20", "META",  "SELL", "momentum", 572.10, 25,  14302.50, 507710.00, "trailing_stop",   -0.0225),
+            ("2026-04-11", "AMD",   "BUY",  "breakout", 109.60, 200, 21920.00, 507710.00, "breakout_signal",  None),
+            ("2026-04-27", "AMD",   "SELL", "breakout", 118.40, 200, 23680.00, 509470.00, "trailing_stop",    0.0803),
+            ("2026-04-14", "GOOGL", "BUY",  "trend",    168.90, 120, 20268.00, 509470.00, "trend_signal",     None),
+            ("2026-05-02", "GOOGL", "SELL", "trend",    175.20, 120, 21024.00, 510226.00, "trend_exit",       0.0373),
+            ("2026-04-17", "AVGO",  "BUY",  "momentum", 232.10, 55,  12765.50, 510226.00, "momentum_signal",  None),
+            ("2026-05-04", "AVGO",  "SELL", "momentum", 241.50, 55,  13282.50, 510743.00, "trailing_stop",    0.0405),
+            ("2026-04-20", "COST",  "BUY",  "mean_rev", 895.40, 30,  26862.00, 510743.00, "mean_rev_signal",  None),
+            ("2026-04-30", "COST",  "SELL", "mean_rev", 878.20, 30,  26346.00, 510227.00, "trailing_stop",   -0.0192),
+            ("2026-04-24", "CRWD",  "BUY",  "breakout", 384.20, 80,  30736.00, 510227.00, "breakout_signal",  None),
+            ("2026-05-06", "CRWD",  "SELL", "breakout", 401.30, 80,  32104.00, 511595.00, "trailing_stop",    0.0445),
+            ("2026-04-22", "AAPL",  "BUY",  "momentum", 211.40, 60,  12684.00, 511595.00, "momentum_signal",  None),
+            ("2026-05-08", "AAPL",  "SELL", "momentum", 219.80, 60,  13188.00, 512099.00, "trailing_stop",    0.0397),
+            # open BUYs
+            ("2026-04-28", "JPM",   "BUY",  "momentum", 274.80, 75,  20610.00, 512099.00, "momentum_signal",  None),
+            ("2026-05-02", "TSLA",  "BUY",  "mean_rev", 285.60, 120, 34272.00, 512099.00, "mean_rev_signal",  None),
+            ("2026-05-05", "META",  "BUY",  "breakout", 591.40, 30,  17742.00, 512099.00, "breakout_signal",  None),
+            ("2026-05-07", "NVDA",  "BUY",  "momentum", 124.60, 280, 34888.00, 512099.00, "momentum_signal",  None),
+        ]
+        for t in seed_trades:
+            cur.execute(
+                f"INSERT INTO trades (date,symbol,action,strategy,price,shares,position_value,portfolio_value,reason,profit_pct) "
+                f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
+                t,
+            )
+
         conn.commit()
     cur.close()
     conn.close()
