@@ -48,18 +48,29 @@ def _get_portfolio_metrics(state, market_data, spy_price=None):
         from portfolio import get_conn
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute('SELECT portfolio_value FROM equity_history ORDER BY id DESC LIMIT 2')
-        eq_rows = cur.fetchall()
+        cur.execute('SELECT portfolio_value FROM equity_history ORDER BY id ASC')
+        hist_rows = cur.fetchall()
         conn.close()
-        daily_pnl = round(float(eq_rows[0][0]) - float(eq_rows[1][0]), 2) if len(eq_rows) >= 2 else 0.0
+        daily_pnl = round(float(hist_rows[-1][0]) - float(hist_rows[-2][0]), 2) if len(hist_rows) >= 2 else 0.0
+        peak = starting
+        max_dd = 0.0
+        for hr in hist_rows:
+            v = float(hr[0])
+            if v > peak:
+                peak = v
+            dd = (peak - v) / peak if peak > 0 else 0.0
+            if dd > max_dd:
+                max_dd = dd
+        max_drawdown_pct = round(-max_dd * 100, 2)
     except Exception:
         daily_pnl = 0.0
+        max_drawdown_pct = round(-drawdown * 100, 2)
 
     return {
         'portfolio_value': round(portfolio_value, 2),
         'total_return': round(total_return * 100, 2),
         'vs_spy_alpha': round(alpha * 100, 2),
-        'max_drawdown': round(-drawdown * 100, 2),
+        'max_drawdown': max_drawdown_pct,
         'daily_pnl': daily_pnl,
         'open_positions': len(state.get('positions', [])),
         'max_positions': 5,
@@ -164,8 +175,13 @@ def api_trades():
         cur.execute(f'SELECT date, symbol, action, strategy, price, shares, profit_pct FROM trades ORDER BY id DESC LIMIT 50')
         rows = cur.fetchall()
         conn.close()
-        cols = ['date', 'symbol', 'action', 'strategy', 'price', 'shares', 'profit_pct']
-        return jsonify([dict(zip(cols, r)) for r in rows])
+        result = []
+        for r in rows:
+            d = dict(zip(['date', 'symbol', 'action', 'strategy', 'price', 'shares', 'profit_pct'], r))
+            if d['profit_pct'] is not None:
+                d['profit_pct'] = round(float(d['profit_pct']) * 100, 2)
+            result.append(d)
+        return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -173,43 +189,55 @@ def api_trades():
 @app.route('/api/equity-history')
 def api_equity_history():
     try:
+        import yfinance as yf
         from portfolio import get_conn, get_state as _get_state
         conn = get_conn()
         cur = conn.cursor()
 
         # Deduplicate by date — keep the latest entry per date
         cur.execute('''
-            SELECT date, portfolio_value, spy_value
+            SELECT date, portfolio_value
             FROM equity_history
             WHERE id IN (SELECT MAX(id) FROM equity_history GROUP BY date)
             ORDER BY date ASC LIMIT 90
         ''')
-        rows = list(cur.fetchall())
+        rows = list(cur.fetchall())  # (date, portfolio_value)
 
         state = _get_state()
         spy_df = _scheduler.MARKET_DATA.get('SPY') if _scheduler.MARKET_DATA else None
         spy_now = _safe_last(spy_df, 'Close') if spy_df is not None else (get_current_price('SPY') or 0)
-        spy_baseline = state.get('spy_baseline') or spy_now or 0
+
+        # Fetch real SPY historical closes and build a date→price map
+        spy_hist = {}
+        try:
+            if rows:
+                start_date = rows[0][0]
+                raw = yf.download('SPY', start=start_date, progress=False, auto_adjust=True)
+                if not raw.empty:
+                    close_col = 'Close'
+                    for idx, price in raw[close_col].items():
+                        spy_hist[str(idx)[:10]] = float(price)
+        except Exception:
+            pass
+
+        # Scale SPY to $500k using the first available date's price as baseline
+        spy_dates = sorted(spy_hist.keys())
+        spy_scale_base = spy_hist[spy_dates[0]] if spy_dates else None
+
+        def spy_scaled_for(date_str):
+            if spy_scale_base and spy_hist.get(date_str):
+                return round(spy_hist[date_str] / spy_scale_base * 500000, 2)
+            return None
 
         if len(rows) < 2:
-            # Synthesize from trades: each trade row stores portfolio_value at that moment
+            # Synthesize from trades
             cur.execute('SELECT date, portfolio_value FROM trades ORDER BY id ASC')
             trade_rows = cur.fetchall()
             if trade_rows:
                 seen = {}
                 for date_str, pv in trade_rows:
                     seen[date_str[:10]] = float(pv)
-                dates = sorted(seen.keys())
-                n = len(dates)
-                synth = []
-                for i, d in enumerate(dates):
-                    pv = seen[d]
-                    frac = i / max(n - 1, 1)
-                    # interpolate SPY price baseline→now, then scale to $500k
-                    spy_price_interp = spy_baseline + frac * (spy_now - spy_baseline)
-                    spy_val = round(spy_price_interp / spy_baseline * 500000, 2) if spy_baseline else 500000
-                    synth.append((d, pv, spy_val))
-                rows = synth
+                rows = [(d, seen[d]) for d in sorted(seen.keys())]
 
         conn.close()
 
@@ -217,18 +245,23 @@ def api_equity_history():
         try:
             md = _scheduler.MARKET_DATA if _scheduler.MARKET_DATA else {}
             live_pv = get_portfolio_value(state, md)
-            spy_scaled = round(spy_now / spy_baseline * 500000, 2) if spy_baseline else 500000
             today = datetime.now().strftime('%Y-%m-%d')
             if not rows or rows[-1][0] != today:
-                rows.append((today, live_pv, spy_scaled))
+                rows.append((today, live_pv))
             else:
-                rows[-1] = (today, live_pv, spy_scaled)
+                rows[-1] = (today, live_pv)
+            if spy_now and not spy_hist.get(today):
+                spy_hist[today] = spy_now
+                if not spy_scale_base:
+                    spy_scale_base = spy_now
         except Exception:
             pass
 
-        return jsonify([{'date': r[0], 'portfolio_value': round(float(r[1]), 2),
-                         'spy_value': round(float(r[2]), 2) if r[2] is not None else None}
-                        for r in rows])
+        return jsonify([{
+            'date': r[0],
+            'portfolio_value': round(float(r[1]), 2),
+            'spy_value': spy_scaled_for(r[0]),
+        } for r in rows])
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
