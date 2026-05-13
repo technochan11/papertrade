@@ -79,7 +79,7 @@ def _safe_last(df, col, default=0):
 def api_portfolio():
     try:
         state = get_state()
-        md = _scheduler.MARKET_DATA if _scheduler.MARKET_DATA else get_market_data(['SPY'])
+        md = _scheduler.MARKET_DATA if _scheduler.MARKET_DATA else {}
 
         spy_df = md.get('SPY')
         spy_price = _safe_last(spy_df, 'Close') if spy_df is not None else (get_current_price('SPY') or 0)
@@ -134,8 +134,10 @@ def api_positions():
         state = get_state()
         positions = state.get('positions', [])
         result = []
+        md = _scheduler.MARKET_DATA
         for p in positions:
-            price = get_current_price(p['ticker']) or p['entry_price']
+            df = md.get(p['ticker']) if md else None
+            price = _safe_last(df, 'Close') if df is not None else (get_current_price(p['ticker']) or p['entry_price'])
             pnl = (price - p['entry_price']) / p['entry_price']
             result.append({
                 'ticker': p['ticker'],
