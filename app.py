@@ -33,13 +33,15 @@ def health():
     return jsonify({'status': 'ok'})
 
 
-def _get_portfolio_metrics(state, market_data):
+def _get_portfolio_metrics(state, market_data, spy_price=None):
     portfolio_value = get_portfolio_value(state, market_data)
     starting = state.get('starting_capital', 500000)
     drawdown = get_drawdown(portfolio_value, starting)
     total_return = (portfolio_value - starting) / starting
 
-    spy_price = get_current_price('SPY')
+    if spy_price is None:
+        spy_df_local = market_data.get('SPY')
+        spy_price = _safe_last(spy_df_local, 'Close') if spy_df_local is not None else (get_current_price('SPY') or 0)
     spy_baseline = state.get('spy_baseline') or spy_price
     spy_return = ((spy_price / spy_baseline) - 1) if spy_baseline and spy_price else 0
     alpha = total_return - spy_return
@@ -80,10 +82,10 @@ def api_portfolio():
     try:
         state = get_state()
         md = MARKET_DATA if MARKET_DATA else get_market_data(['SPY'])
-        metrics = _get_portfolio_metrics(state, md)
 
         spy_df = md.get('SPY')
-        spy_price = get_current_price('SPY') or 0
+        spy_price = _safe_last(spy_df, 'Close') if spy_df is not None else (get_current_price('SPY') or 0)
+        metrics = _get_portfolio_metrics(state, md, spy_price=spy_price)
         ema50 = _safe_last(spy_df, 'EMA50') if spy_df is not None else 0
         ema200 = _safe_last(spy_df, 'EMA200') if spy_df is not None else 0
         adx = _safe_last(spy_df, 'ADX') if spy_df is not None else 0
@@ -183,6 +185,11 @@ def api_equity_history():
         ''')
         rows = list(cur.fetchall())
 
+        state = _get_state()
+        spy_df = MARKET_DATA.get('SPY') if MARKET_DATA else None
+        spy_now = _safe_last(spy_df, 'Close') if spy_df is not None else (get_current_price('SPY') or 0)
+        spy_baseline = state.get('spy_baseline') or spy_now or 0
+
         if len(rows) < 2:
             # Synthesize from trades: each trade row stores portfolio_value at that moment
             cur.execute('SELECT date, portfolio_value FROM trades ORDER BY id ASC')
@@ -191,30 +198,24 @@ def api_equity_history():
                 seen = {}
                 for date_str, pv in trade_rows:
                     seen[date_str[:10]] = float(pv)
-                state = _get_state()
-                spy_baseline = state.get('spy_baseline') or 0
-                spy_now = get_current_price('SPY') or spy_baseline or 0
                 dates = sorted(seen.keys())
                 n = len(dates)
                 synth = []
                 for i, d in enumerate(dates):
                     pv = seen[d]
-                    # linear interpolation of SPY from baseline → current
                     frac = i / max(n - 1, 1)
-                    spy_val = round(spy_baseline + frac * (spy_now - spy_baseline) * 500000 / spy_now, 2) if spy_now else 500000
+                    # interpolate SPY price baseline→now, then scale to $500k
+                    spy_price_interp = spy_baseline + frac * (spy_now - spy_baseline)
+                    spy_val = round(spy_price_interp / spy_baseline * 500000, 2) if spy_baseline else 500000
                     synth.append((d, pv, spy_val))
                 rows = synth
 
         conn.close()
 
-        # Always append the live current value as today's final point
+        # Always append / replace today's point with the live current value
         try:
-            state = _get_state()
             md = MARKET_DATA if MARKET_DATA else {}
             live_pv = get_portfolio_value(state, md)
-            spy_now = get_current_price('SPY') or 0
-            state2 = _get_state()
-            spy_baseline = state2.get('spy_baseline') or spy_now
             spy_scaled = round(spy_now / spy_baseline * 500000, 2) if spy_baseline else 500000
             today = datetime.now().strftime('%Y-%m-%d')
             if not rows or rows[-1][0] != today:
