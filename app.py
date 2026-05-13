@@ -7,10 +7,8 @@ from flask_cors import CORS
 
 from portfolio import init_db, get_state, get_portfolio_value, get_drawdown
 from data import get_market_data, get_vix, get_current_price
-from scheduler import (
-    start_scheduler, MARKET_DATA, REGIME, STRATEGY_WEIGHTS,
-    morning_data_fetch, update_regime, run_strategies, check_exits_job, daily_snapshot
-)
+import scheduler as _scheduler
+from scheduler import start_scheduler, morning_data_fetch, update_regime, run_strategies, check_exits_job, daily_snapshot
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -81,7 +79,7 @@ def _safe_last(df, col, default=0):
 def api_portfolio():
     try:
         state = get_state()
-        md = MARKET_DATA if MARKET_DATA else get_market_data(['SPY'])
+        md = _scheduler.MARKET_DATA if _scheduler.MARKET_DATA else get_market_data(['SPY'])
 
         spy_df = md.get('SPY')
         spy_price = _safe_last(spy_df, 'Close') if spy_df is not None else (get_current_price('SPY') or 0)
@@ -98,7 +96,7 @@ def api_portfolio():
 
         metrics.update({
             'regime': {
-                'label':     REGIME,
+                'label':     _scheduler.REGIME,
                 'spy_price': round(spy_price, 2),
                 'ema50':     round(ema50, 2),
                 'ema200':    round(ema200, 2),
@@ -106,7 +104,7 @@ def api_portfolio():
                 'adx':       round(adx, 2),
                 'vix':       round(vix, 2),
             },
-            'strategy_weights': STRATEGY_WEIGHTS,
+            'strategy_weights': _scheduler.STRATEGY_WEIGHTS,
             'beta': 1.0,
             'sharpe': 0.0,
             'correlation': 0.0,
@@ -186,7 +184,7 @@ def api_equity_history():
         rows = list(cur.fetchall())
 
         state = _get_state()
-        spy_df = MARKET_DATA.get('SPY') if MARKET_DATA else None
+        spy_df = _scheduler.MARKET_DATA.get('SPY') if _scheduler.MARKET_DATA else None
         spy_now = _safe_last(spy_df, 'Close') if spy_df is not None else (get_current_price('SPY') or 0)
         spy_baseline = state.get('spy_baseline') or spy_now or 0
 
@@ -214,7 +212,7 @@ def api_equity_history():
 
         # Always append / replace today's point with the live current value
         try:
-            md = MARKET_DATA if MARKET_DATA else {}
+            md = _scheduler.MARKET_DATA if _scheduler.MARKET_DATA else {}
             live_pv = get_portfolio_value(state, md)
             spy_scaled = round(spy_now / spy_baseline * 500000, 2) if spy_baseline else 500000
             today = datetime.now().strftime('%Y-%m-%d')
@@ -271,7 +269,7 @@ def api_run_strategy():
         morning_data_fetch()
         update_regime()
         run_strategies()
-        return jsonify({'status': 'ok', 'message': 'Strategy run complete', 'regime': REGIME})
+        return jsonify({'status': 'ok', 'message': 'Strategy run complete', 'regime': _scheduler.REGIME})
     except Exception as e:
         logger.error(f'run-strategy error: {e}', exc_info=True)
         return jsonify({'status': 'error', 'message': str(e)}), 500
