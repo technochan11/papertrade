@@ -60,7 +60,9 @@ def init_db():
     conn.commit()
     cur.execute(f"SELECT value FROM portfolio_state WHERE key = {PLACEHOLDER}", ("state",))
     row = cur.fetchone()
-    if row is None:
+    cur.execute("SELECT count(*) FROM trades")
+    trade_count = (cur.fetchone()[0] if DATABASE_URL else cur.fetchone()[0])
+    if row is None or trade_count == 0:
         initial = {
             "positions": [
                 {"ticker": "JPM",  "strategy": "momentum", "entry_price": 274.80, "shares": 75,  "stop_price": 261.06, "entry_date": "2026-04-28", "days_held": 14, "reason": "momentum_signal"},
@@ -72,10 +74,16 @@ def init_db():
             "starting_capital": 500000.0,
             "spy_baseline": None,
         }
-        cur.execute(
-            f"INSERT INTO portfolio_state (key, value) VALUES ({PLACEHOLDER}, {PLACEHOLDER})",
-            ("state", json.dumps(initial)),
-        )
+        if DATABASE_URL:
+            cur.execute(
+                f"INSERT INTO portfolio_state (key, value) VALUES ({PLACEHOLDER}, {PLACEHOLDER}) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                ("state", json.dumps(initial)),
+            )
+        else:
+            cur.execute(
+                "INSERT OR REPLACE INTO portfolio_state (key, value) VALUES (?, ?)",
+                ("state", json.dumps(initial)),
+            )
 
         # ── Seed equity_history: 45 days starting at $500k for both portfolio and SPY ──
         p = PLACEHOLDER
