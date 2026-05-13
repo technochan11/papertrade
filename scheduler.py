@@ -7,7 +7,8 @@ import pytz
 from data import get_market_data, get_vix, get_current_price
 from portfolio import (
     get_state, save_state, get_portfolio_value, calculate_position_size,
-    check_exits, execute_trade, log_trade, log_equity, get_drawdown, init_db
+    check_exits, execute_trade, log_trade, log_equity, get_drawdown, init_db,
+    _df_latest
 )
 from strategy import run_all_strategies, detect_market_regime, detect_gap_ups
 
@@ -83,7 +84,7 @@ def run_strategies():
             stop = signal['stop_price']
             stop_pct = abs(entry - stop) / entry if entry else 0.05
 
-            size = calculate_position_size(portfolio_value, weight, stop_pct, vix, strategy, REGIME, drawdown)
+            size = calculate_position_size(portfolio_value, weight, stop_pct, vix, strategy, REGIME)
             shares = int(size / entry) if entry > 0 else 0
             if shares < 1 or size > cash:
                 continue
@@ -135,8 +136,8 @@ def check_exits_job():
         for pos in positions:
             exit_info = next((e for e in exits if e['ticker'] == pos['ticker']), None)
             if exit_info:
-                price = get_current_price(pos['ticker']) or pos['entry_price']
-                profit_pct = (price - pos['entry_price']) / pos['entry_price']
+                price = exit_info['exit_price']
+                profit_pct = exit_info['profit_pct']
                 action = 'BUY_TO_COVER' if pos.get('strategy') == 'short' else 'SELL'
                 trade = {
                     'date': datetime.now(EASTERN).isoformat(),
@@ -169,7 +170,8 @@ def daily_snapshot():
     try:
         state = get_state()
         portfolio_value = get_portfolio_value(state, MARKET_DATA)
-        spy_price = get_current_price('SPY') or 0
+        spy_df = MARKET_DATA.get('SPY')
+        spy_price = _df_latest(spy_df, 'Close') if spy_df is not None else (get_current_price('SPY') or 0)
         spy_baseline = state.get('spy_baseline')
         if not spy_baseline and spy_price:
             state['spy_baseline'] = spy_price

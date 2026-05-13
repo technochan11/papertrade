@@ -92,7 +92,8 @@ def api_portfolio():
             spy_1m = (float(close.iloc[-1]) - float(close.iloc[-23])) / float(close.iloc[-23]) if close is not None and len(close) >= 23 else 0
         except Exception:
             spy_1m = 0
-        vix = get_vix()
+        vix_cache = md.get('^VIX')
+        vix = _safe_last(vix_cache, 'Close', 20.0) if vix_cache is not None else get_vix()
 
         metrics.update({
             'regime': {
