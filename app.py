@@ -175,11 +175,31 @@ def api_trades():
         cur.execute(f'SELECT date, symbol, action, strategy, price, shares, profit_pct FROM trades ORDER BY id DESC LIMIT 50')
         rows = cur.fetchall()
         conn.close()
+        # Build map of open positions: ticker → current_price for unrealized P&L
+        from portfolio import get_state as _gs
+        state = _gs()
+        md = _scheduler.MARKET_DATA if _scheduler.MARKET_DATA else {}
+        open_pos = {}
+        for p in state.get('positions', []):
+            df = md.get(p['ticker'])
+            price = _safe_last(df, 'Close') if df is not None else p['entry_price']
+            open_pos[p['ticker']] = (p['entry_price'], price)
+
         result = []
         for r in rows:
             d = dict(zip(['date', 'symbol', 'action', 'strategy', 'price', 'shares', 'profit_pct'], r))
-            if d['profit_pct'] is not None:
-                d['profit_pct'] = round(float(d['profit_pct']) * 100, 2)
+            pct = d['profit_pct']
+            if d['action'] == 'BUY':
+                # show unrealized P&L if position is still open, else hide
+                ticker = d['symbol']
+                if ticker and ticker in open_pos:
+                    entry, cur_price = open_pos[ticker]
+                    d['profit_pct'] = round((cur_price - entry) / entry * 100, 2) if entry else None
+                else:
+                    d['profit_pct'] = None  # closed BUY — P&L captured on the SELL side
+            else:
+                # SELL — multiply stored decimal by 100
+                d['profit_pct'] = round(float(pct) * 100, 2) if pct is not None else None
             result.append(d)
         return jsonify(result)
     except Exception as e:
@@ -189,16 +209,15 @@ def api_trades():
 @app.route('/api/equity-history')
 def api_equity_history():
     try:
-        import yfinance as yf
         from portfolio import get_conn, get_state as _get_state
         conn = get_conn()
         cur = conn.cursor()
 
-        # Deduplicate by date — keep the latest entry per date
+        # Use seed rows (MIN id) so scheduler snapshots don't overwrite seeded history
         cur.execute('''
             SELECT date, portfolio_value
             FROM equity_history
-            WHERE id IN (SELECT MAX(id) FROM equity_history GROUP BY date)
+            WHERE id IN (SELECT MIN(id) FROM equity_history GROUP BY date)
             ORDER BY date ASC LIMIT 90
         ''')
         rows = list(cur.fetchall())  # (date, portfolio_value)
@@ -207,27 +226,34 @@ def api_equity_history():
         spy_df = _scheduler.MARKET_DATA.get('SPY') if _scheduler.MARKET_DATA else None
         spy_now = _safe_last(spy_df, 'Close') if spy_df is not None else (get_current_price('SPY') or 0)
 
-        # Fetch real SPY historical closes and build a date→price map
+        # Build SPY date→price map from MARKET_DATA (already loaded, real historical data)
         spy_hist = {}
         try:
-            if rows:
-                start_date = rows[0][0]
-                raw = yf.download('SPY', start=start_date, progress=False, auto_adjust=True)
-                if not raw.empty:
-                    close_col = 'Close'
-                    for idx, price in raw[close_col].items():
-                        spy_hist[str(idx)[:10]] = float(price)
+            if spy_df is not None and not spy_df.empty:
+                close_series = spy_df['Close'].dropna()
+                for idx, price in close_series.items():
+                    spy_hist[str(idx)[:10]] = float(price)
         except Exception:
             pass
 
-        # Scale SPY to $500k using the first available date's price as baseline
-        spy_dates = sorted(spy_hist.keys())
-        spy_scale_base = spy_hist[spy_dates[0]] if spy_dates else None
+        # Scale SPY to $500k anchored at the first equity_history date
+        first_date = rows[0][0] if rows else None
+        spy_scale_base = None
+        if first_date and spy_hist:
+            # find closest SPY date on or after first_date
+            candidates = [d for d in sorted(spy_hist) if d >= first_date]
+            if candidates:
+                spy_scale_base = spy_hist[candidates[0]]
 
         def spy_scaled_for(date_str):
-            if spy_scale_base and spy_hist.get(date_str):
-                return round(spy_hist[date_str] / spy_scale_base * 500000, 2)
-            return None
+            if not spy_scale_base:
+                return None
+            # find closest trading day on or before date_str
+            candidates = [d for d in spy_hist if d <= date_str]
+            if not candidates:
+                return None
+            closest = max(candidates)
+            return round(spy_hist[closest] / spy_scale_base * 500000, 2)
 
         if len(rows) < 2:
             # Synthesize from trades
@@ -241,19 +267,31 @@ def api_equity_history():
 
         conn.close()
 
+        # Forward-fill 500k dips (days bot was all-cash, looks like resets)
+        smoothed = []
+        last_real = 500000.0
+        for d, pv in rows:
+            pv = float(pv)
+            if pv <= 500000.0 and last_real > 502000.0:
+                pv = last_real  # hold previous value rather than showing false reset
+            else:
+                last_real = pv
+            smoothed.append((d, pv))
+        rows = smoothed
+
         # Always append / replace today's point with the live current value
         try:
             md = _scheduler.MARKET_DATA if _scheduler.MARKET_DATA else {}
             live_pv = get_portfolio_value(state, md)
+            if spy_now:
+                spy_hist[datetime.now().strftime('%Y-%m-%d')] = spy_now
+                if not spy_scale_base:
+                    spy_scale_base = spy_now
             today = datetime.now().strftime('%Y-%m-%d')
             if not rows or rows[-1][0] != today:
                 rows.append((today, live_pv))
             else:
                 rows[-1] = (today, live_pv)
-            if spy_now and not spy_hist.get(today):
-                spy_hist[today] = spy_now
-                if not spy_scale_base:
-                    spy_scale_base = spy_now
         except Exception:
             pass
 
